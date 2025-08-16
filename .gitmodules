@@ -1,8 +1,8 @@
 [submodule "dags/team_1"]
-	path = dags/team_1
-	url = git@github.com:derinj7/team_1_dags.git
-	branch = main
+  path = dags/team_1
+  url = https://github.com/derinj7/team_1_dags.git
+  branch = main
 [submodule "dags/team_2"]
-	path = dags/team_2
-	url = git@github.com:derinj7/team_2_dags.git
-	branch = main
+  path = dags/team_2
+  url = https://github.com/derinj7/team_2_dags.git
+  branch = main
