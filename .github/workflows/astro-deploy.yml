@@ -14,11 +14,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout (with submodules via PAT)
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
+          token: ${{ secrets.SUBMODULES_PAT }}
+
 
       # Pull submodules to the latest commits on the tracked branches (main)
       - name: Update submodules to latest
