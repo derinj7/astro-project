@@ -2,16 +2,18 @@ name: Astronomer CI - Deploy code
 
 on:
   push:
-    branches: [ main ]              # keep normal deploys on merge
+    branches: [ main ]
   repository_dispatch:
-    types: [ deploy_request ]       # allow team repos to trigger a deploy
-  workflow_dispatch: {}             # manual trigger (optional)
+    types: [ deploy_request ]
+  workflow_dispatch: {}
 
 env:
-  ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }}  # Deployment/Workspace/Org token
+  ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }}
 
 jobs:
-  deploy:
+  # -------- PUSH / MANUAL: decide DAG-only vs image by changed paths --------
+  deploy-from-push:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with submodules via PAT)
@@ -21,14 +23,55 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_PAT }}
 
+      # Determine what changed in this commit (or the merge commit)
+      - name: Filter changed paths
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          # "dags" -> any changes under dags/**
+          # "other" -> any changes outside dags/**
+          filters: |
+            dags:
+              - 'dags/**'
+            other:
+              - '**'
+              - '!dags/**'
 
-      # Pull submodules to the latest commits on the tracked branches (main)
-      - name: Update submodules to latest
-        run: git submodule update --init --recursive --remote
-
-      # Astronomer Default Deploy Action (auto "infer": DAGs-only vs image-and-dags)
-      - name: Deploy to Astro
-        uses: astronomer/deploy-action@v0.9.0
+      # If ONLY dags changed -> DAG-only deploy
+      - name: Deploy DAGs only
+        if: steps.changes.outputs.dags == 'true' && steps.changes.outputs.other == 'false'
+        uses: astronomer/deploy-action@v0.10.1
         with:
           deployment-id: ${{ vars.DEPLOYMENT_ID }}
-          force: true
+          deploy-type: dags-only
+          # force: true   # optional: skip parse/tests if you want
+
+      # Else -> full image deploy
+      - name: Deploy image and DAGs
+        if: steps.changes.outputs.other == 'true'
+        uses: astronomer/deploy-action@v0.10.1
+        with:
+          deployment-id: ${{ vars.DEPLOYMENT_ID }}
+          deploy-type: image-and-dags
+          # force: true   # optional
+
+  # -------- DISPATCH (from team repos): always DAG-only --------
+  deploy-from-dispatch:
+    if: github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules via PAT)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.SUBMODULES_PAT }}
+
+      - name: Update submodules to latest (tracked branches)
+        run: git submodule update --init --recursive --remote
+
+      - name: Deploy DAGs only (forced for dispatch)
+        uses: astronomer/deploy-action@v0.10.1
+        with:
+          deployment-id: ${{ vars.DEPLOYMENT_ID }}
+          deploy-type: dags-only
