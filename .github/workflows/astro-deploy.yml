@@ -31,6 +31,8 @@ jobs:
         id: changes
         uses: dorny/paths-filter@v3
         with:
+          base: HEAD~1
+          list-files: json
           filters: |
             dags:
               - 'dags/**'
@@ -42,20 +44,37 @@ jobs:
       # Debug: Show what changed
       - name: Debug - Show detected changes
         run: |
+          echo "=== PATHS FILTER RESULTS ==="
           echo "DAGs changed: ${{ steps.changes.outputs.dags }}"
           echo "Other files changed: ${{ steps.changes.outputs.other }}"
-          echo "Changed files:"
-          echo "${{ steps.changes.outputs.changes }}"
+          echo "All changes detected: ${{ steps.changes.outputs.changes }}"
+          echo ""
+          echo "=== FILES DETECTED BY FILTER ==="
+          echo "DAG files: ${{ steps.changes.outputs.dags_files }}"
+          echo "Other files: ${{ steps.changes.outputs.other_files }}"
+          echo ""
+          echo "=== GIT DIFF ANALYSIS ==="
+          echo "Files that changed in this push:"
+          git diff --name-only HEAD~1 HEAD || echo "Could not get diff"
+          echo ""
+          echo "=== DEPLOYMENT DECISION ==="
+          if [[ "${{ steps.changes.outputs.dags }}" == "true" && "${{ steps.changes.outputs.other }}" == "false" ]]; then
+            echo "DECISION: DAG-only deploy (dags=true, other=false)"
+          elif [[ "${{ steps.changes.outputs.other }}" == "true" ]]; then
+            echo "DECISION: Full image deploy (other=true)"
+          else
+            echo "DECISION: No deployment (dags=false, other=false)"
+          fi
 
-      # Now checkout submodules for deployment
-      - name: Checkout submodules
+      # Only-dags -> DAG deploy (checkout submodules first)
+      - name: Checkout submodules for DAG deploy
+        if: steps.changes.outputs.dags == 'true' && steps.changes.outputs.other == 'false'
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_PAT }}
 
-      # Only-dags -> DAG deploy
       - name: Deploy DAGs only
         if: steps.changes.outputs.dags == 'true' && steps.changes.outputs.other == 'false'
         uses: astronomer/deploy-action@v0.10.1
@@ -63,7 +82,15 @@ jobs:
           deployment-id: ${{ vars.DEPLOYMENT_ID }}
           deploy-type: dags-only
 
-      # Anything else -> image deploy
+      # Anything else -> image deploy (checkout submodules first)
+      - name: Checkout submodules for image deploy
+        if: steps.changes.outputs.other == 'true'
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.SUBMODULES_PAT }}
+        
       - name: Deploy image and DAGs
         if: steps.changes.outputs.other == 'true'
         uses: astronomer/deploy-action@v0.10.1
