@@ -91,6 +91,7 @@ def example_astronauts():
 
     # Use dynamic task mapping to run the print_astronaut_craft task for each
     # Astronaut in space
+    # added a comment to trigger the dag only deploy
     print_astronaut_craft.partial(greeting="Hello! :)").expand(
         person_in_space=get_astronauts()  # Define dependencies using TaskFlow API syntax
     )
