@@ -20,94 +20,85 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (initial, no submodules)
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          submodules: recursive
+          fetch-depth: 2
           token: ${{ secrets.SUBMODULES_PAT }}
 
-      # Decide what changed BEFORE checking out submodules
-      - name: Filter changed paths
+      # Determine what changed by comparing with previous commit
+      - name: Check what files changed
         id: changes
-        uses: dorny/paths-filter@v3
-        with:
-          base: HEAD~1
-          list-files: json
-          filters: |
-            dags:
-              - 'dags/**'
-            other:
-              - '**'
-              - '!dags/**'
-              - '!.gitmodules'
-
-      # Debug: Show what changed
-      - name: Debug - Show detected changes
         run: |
-          echo "=== PATHS FILTER RESULTS ==="
-          echo "DAGs changed: ${{ steps.changes.outputs.dags }}"
-          echo "Other files changed: ${{ steps.changes.outputs.other }}"
-          echo "All changes detected: ${{ steps.changes.outputs.changes }}"
+          echo "=== Files changed in this commit ==="
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          echo "$CHANGED_FILES"
+          
+          # Check if only DAG files changed
+          DAGS_CHANGED=false
+          OTHER_CHANGED=false
+          
+          while IFS= read -r file; do
+            if [[ -n "$file" ]]; then
+              echo "Analyzing file: $file"
+              if [[ "$file" =~ ^dags/.* ]]; then
+                echo "  -> DAG file detected"
+                DAGS_CHANGED=true
+              elif [[ "$file" != ".gitmodules" ]]; then
+                echo "  -> Non-DAG file detected"
+                OTHER_CHANGED=true
+              else
+                echo "  -> .gitmodules file (ignored)"
+              fi
+            fi
+          done <<< "$CHANGED_FILES"
+          
+          echo "DAGS_CHANGED=$DAGS_CHANGED" >> $GITHUB_OUTPUT
+          echo "OTHER_CHANGED=$OTHER_CHANGED" >> $GITHUB_OUTPUT
+          
           echo ""
-          echo "=== FILES DETECTED BY FILTER ==="
-          echo "DAG files: ${{ steps.changes.outputs.dags_files }}"
-          echo "Other files: ${{ steps.changes.outputs.other_files }}"
-          echo ""
-          echo "=== GIT DIFF ANALYSIS ==="
-          echo "Files that changed in this push:"
-          git diff --name-only HEAD~1 HEAD || echo "Could not get diff"
-          echo ""
-          echo "=== DEPLOYMENT DECISION ==="
-          if [[ "${{ steps.changes.outputs.dags }}" == "true" && "${{ steps.changes.outputs.other }}" == "false" ]]; then
-            echo "DECISION: DAG-only deploy (dags=true, other=false)"
-          elif [[ "${{ steps.changes.outputs.other }}" == "true" ]]; then
-            echo "DECISION: Full image deploy (other=true)"
+          echo "=== DECISION LOGIC ==="
+          echo "DAGs changed: $DAGS_CHANGED"
+          echo "Other files changed: $OTHER_CHANGED"
+          
+          if [[ "$DAGS_CHANGED" == "true" && "$OTHER_CHANGED" == "false" ]]; then
+            echo "DECISION: DAG-only deploy"
+            echo "DEPLOY_TYPE=dags" >> $GITHUB_OUTPUT
           else
-            echo "DECISION: No deployment (dags=false, other=false)"
+            echo "DECISION: Full image deploy"
+            echo "DEPLOY_TYPE=image" >> $GITHUB_OUTPUT
           fi
 
-      # Only-dags -> DAG deploy (checkout submodules first)
-      - name: Checkout submodules for DAG deploy
-        if: steps.changes.outputs.dags == 'true' && steps.changes.outputs.other == 'false'
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-          token: ${{ secrets.SUBMODULES_PAT }}
+      # Install Astro CLI
+      - name: Install Astro CLI
+        run: |
+          curl -sSL install.astronomer.io | sudo bash -s
+          astro version
 
+      # Deploy based on detected changes
       - name: Deploy DAGs only
-        if: steps.changes.outputs.dags == 'true' && steps.changes.outputs.other == 'false'
-        uses: astronomer/deploy-action@v0.10.1
-        with:
-          deployment-id: ${{ vars.DEPLOYMENT_ID }}
-          deploy-type: dags-only
+        if: steps.changes.outputs.DEPLOY_TYPE == 'dags'
+        run: |
+          echo "🚀 Deploying DAGs only..."
+          astro deploy ${{ vars.DEPLOYMENT_ID }} --dags
 
-      # Anything else -> image deploy (checkout submodules first)
-      - name: Checkout submodules for image deploy
-        if: steps.changes.outputs.other == 'true'
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-          token: ${{ secrets.SUBMODULES_PAT }}
-        
-      - name: Deploy image and DAGs
-        if: steps.changes.outputs.other == 'true'
-        uses: astronomer/deploy-action@v0.10.1
-        with:
-          deployment-id: ${{ vars.DEPLOYMENT_ID }}
-          deploy-type: image-and-dags
+      - name: Deploy full image
+        if: steps.changes.outputs.DEPLOY_TYPE == 'image'
+        run: |
+          echo "🚀 Deploying full image and DAGs..."
+          astro deploy ${{ vars.DEPLOYMENT_ID }}
 
   # -------- DISPATCH (from team repos): always DAG-only --------
   deploy-from-dispatch:
     if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with submodules via PAT)
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
           token: ${{ secrets.SUBMODULES_PAT }}
 
       - name: Update submodules to latest
@@ -115,8 +106,13 @@ jobs:
           git submodule update --init --recursive --remote
           echo "Updated submodules to latest commits"
 
+      # Install Astro CLI
+      - name: Install Astro CLI
+        run: |
+          curl -sSL install.astronomer.io | sudo bash -s
+          astro version
+
       - name: Deploy DAGs only (forced)
-        uses: astronomer/deploy-action@v0.10.1
-        with:
-          deployment-id: ${{ vars.DEPLOYMENT_ID }}
-          deploy-type: dags-only
+        run: |
+          echo "🚀 Deploying DAGs only (repository dispatch)..."
+          astro deploy ${{ vars.DEPLOYMENT_ID }} --dags
