@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # -------- PUSH / MANUAL: choose by paths --------
+  # ---- PUSH or MANUAL: decide by changed paths ----
   deploy-from-push:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -27,35 +27,58 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_PAT }}
 
-      # Decide what changed
-      - name: Filter changed paths
-        id: changes
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            dags:
-              - 'dags/**'
-            other:
-              - '**'
-              - '!dags/**'
+      # Decide deploy type *purely* from changed paths
+      - name: Decide deploy type by paths
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.before }}"
+          HEAD="${{ github.sha }}"
 
-      # Only-dags -> DAG deploy
-      - name: Deploy DAGs only
-        if: steps.changes.outputs.dags == 'true' && steps.changes.outputs.other == 'false'
+          # When there is no 'before' (e.g. manual run / first push), use HEAD^ if it exists
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              BASE="$(git rev-parse HEAD^)"
+            else
+              # Single-commit repo fallback: treat as image-and-dags to be safe
+              echo "deploy_type=image-and-dags" >> "$GITHUB_OUTPUT"
+              echo "changed_paths=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          git fetch --no-tags --prune origin +$BASE:$BASE || true
+          CHANGED="$(git diff --name-only "$BASE" "$HEAD" || true)"
+          echo "changed_paths<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # If any changed path is NOT under "dags/", we need an image deploy
+          if echo "$CHANGED" | grep -E '^(?!dags/).+' -q; then
+            echo "deploy_type=image-and-dags" >> "$GITHUB_OUTPUT"
+          # If there are changes and they are ALL under "dags/", do DAG-only
+          elif [ -n "$CHANGED" ]; then
+            echo "deploy_type=dags-only" >> "$GITHUB_OUTPUT"
+          else
+            # No changes detected (rare) -> image-and-dags to be conservative
+            echo "deploy_type=image-and-dags" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Optional: show what the step saw (handy for debugging)
+      - name: Show changed files
+        run: |
+          echo "Deploy type: ${{ steps.decide.outputs.deploy_type }}"
+          echo "Changed paths:"
+          echo "${{ steps.decide.outputs.changed_paths }}"
+
+      - name: Deploy to Astro
         uses: astronomer/deploy-action@v0.10.1
         with:
           deployment-id: ${{ vars.DEPLOYMENT_ID }}
-          deploy-type: dags-only
+          deploy-type: ${{ steps.decide.outputs.deploy_type }}
 
-      # Anything else -> image deploy
-      - name: Deploy image and DAGs
-        if: steps.changes.outputs.other == 'true'
-        uses: astronomer/deploy-action@v0.10.1
-        with:
-          deployment-id: ${{ vars.DEPLOYMENT_ID }}
-          deploy-type: image-and-dags
-
-  # -------- DISPATCH (from team repos): always DAG-only --------
+  # ---- DISPATCH (from team repos): always DAG-only after updating submodules ----
   deploy-from-dispatch:
     if: github.event_name == 'repository_dispatch'
     runs-on: ubuntu-latest
