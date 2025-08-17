@@ -10,8 +10,12 @@ on:
 env:
   ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }}
 
+concurrency:
+  group: astro-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  # -------- PUSH / MANUAL: decide DAG-only vs image by changed paths --------
+  # -------- PUSH / MANUAL: choose by paths --------
   deploy-from-push:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -23,13 +27,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_PAT }}
 
-      # Determine what changed in this commit (or the merge commit)
+      # Decide what changed
       - name: Filter changed paths
         id: changes
         uses: dorny/paths-filter@v3
         with:
-          # "dags" -> any changes under dags/**
-          # "other" -> any changes outside dags/**
           filters: |
             dags:
               - 'dags/**'
@@ -37,23 +39,21 @@ jobs:
               - '**'
               - '!dags/**'
 
-      # If ONLY dags changed -> DAG-only deploy
+      # Only-dags -> DAG deploy
       - name: Deploy DAGs only
         if: steps.changes.outputs.dags == 'true' && steps.changes.outputs.other == 'false'
         uses: astronomer/deploy-action@v0.10.1
         with:
           deployment-id: ${{ vars.DEPLOYMENT_ID }}
           deploy-type: dags-only
-          # force: true   # optional: skip parse/tests if you want
 
-      # Else -> full image deploy
+      # Anything else -> image deploy
       - name: Deploy image and DAGs
         if: steps.changes.outputs.other == 'true'
         uses: astronomer/deploy-action@v0.10.1
         with:
           deployment-id: ${{ vars.DEPLOYMENT_ID }}
           deploy-type: image-and-dags
-          # force: true   # optional
 
   # -------- DISPATCH (from team repos): always DAG-only --------
   deploy-from-dispatch:
@@ -67,10 +67,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SUBMODULES_PAT }}
 
-      - name: Update submodules to latest (tracked branches)
+      - name: Update submodules to latest
         run: git submodule update --init --recursive --remote
 
-      - name: Deploy DAGs only (forced for dispatch)
+      - name: Deploy DAGs only (forced)
         uses: astronomer/deploy-action@v0.10.1
         with:
           deployment-id: ${{ vars.DEPLOYMENT_ID }}
