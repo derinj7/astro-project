@@ -39,12 +39,6 @@ jobs:
               - '!dags/**'
               - '!.gitmodules'
 
-      # Now checkout submodules for deployment
-      - name: Checkout submodules
-        run: git submodule update --init --recursive
-        env:
-          GITHUB_TOKEN: ${{ secrets.SUBMODULES_PAT }}
-
       # Debug: Show what changed
       - name: Debug - Show detected changes
         run: |
@@ -52,6 +46,14 @@ jobs:
           echo "Other files changed: ${{ steps.changes.outputs.other }}"
           echo "Changed files:"
           echo "${{ steps.changes.outputs.changes }}"
+
+      # Now checkout submodules for deployment
+      - name: Checkout submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.SUBMODULES_PAT }}
 
       # Only-dags -> DAG deploy
       - name: Deploy DAGs only
